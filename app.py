@@ -4,22 +4,23 @@ import time
 import pandas as pd
 import dash
 from dash import dcc, html, dash_table
-from dash.dependencies import Input, Output, State, ClientsideFunction
+from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import mimetypes
 
-# 1. 強制修正 MIME types (Render 部署必備)
+# 1. 修正 MIME Types (解決 Render 載入卡住問題)
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-# 2. 初始化 Dash，使用 DARKLY 主題作為暗色基底
+# 2. 初始化 Dash (使用 DARKLY 主題)
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
 app.title = "對帳單解析"
+
+# 3. 關鍵：暴露 server 變數給 Gunicorn
 server = app.server
 
-# 3. 定義「星雲設計系統」CSS 樣式 (內嵌於此，無需額外檔案)
-# 包含：霓虹光暈、玻璃擬態卡片、動態進度條
+# 4. 星雲風格 CSS (移除註解以防解析錯誤)
 nebula_styles = html.Style('''
     :root {
         --bg-color: #050510;
@@ -32,36 +33,33 @@ nebula_styles = html.Style('''
         background-color: var(--bg-color) !important;
         background-image: radial-gradient(circle at 50% 10%, #1a1a2e 0%, var(--bg-color) 70%);
         color: var(--text-main);
-        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        font-family: 'Segoe UI', Roboto, sans-serif;
     }
-    /* 標題特效 */
     .nebula-title {
         text-shadow: 0 0 10px var(--neon-blue), 0 0 20px var(--neon-purple);
         font-weight: 700;
         letter-spacing: 2px;
     }
-    /* 卡片玻璃擬態 */
     .card {
         background-color: var(--card-bg) !important;
         border: 1px solid rgba(0, 242, 255, 0.2);
         box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
         backdrop-filter: blur(10px);
     }
-    /* 上傳區特效 */
     .upload-box {
         border: 2px dashed var(--neon-blue) !important;
         background: rgba(0, 242, 255, 0.05);
         transition: all 0.3s ease;
         color: var(--neon-blue);
+        cursor: pointer;
     }
     .upload-box:hover {
         background: rgba(0, 242, 255, 0.1);
         box-shadow: 0 0 20px rgba(0, 242, 255, 0.3);
         transform: scale(1.01);
     }
-    /* 進度條容器 */
     .progress-container {
-        display: none; /* 預設隱藏 */
+        display: none;
         margin-top: 20px;
         text-align: center;
     }
@@ -70,15 +68,14 @@ nebula_styles = html.Style('''
         height: 4px;
         background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
         box-shadow: 0 0 10px var(--neon-blue);
-        transition: width 0.1s linear;
         border-radius: 2px;
+        transition: width 0.1s linear;
     }
     .loading-text {
         color: var(--neon-blue);
         font-family: monospace;
         margin-bottom: 5px;
     }
-    /* 數據表格暗色優化 */
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
         background-color: #1f1f2e !important;
         color: var(--neon-blue) !important;
@@ -91,7 +88,7 @@ nebula_styles = html.Style('''
     }
 ''')
 
-# --- 輔助函式 (邏輯不變) ---
+# --- 輔助函式 ---
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
@@ -103,8 +100,8 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 模擬運算延遲，讓使用者能看到動畫 (部署後可自行調整時間)
-        time.sleep(1.5) 
+        # 模擬運算延遲，讓動畫跑一下
+        time.sleep(1.2)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -138,8 +135,7 @@ def generate_table(dataframe, display_cols=None):
     )
 
 def plot_period_bar(df_resampled, title):
-    colors = ['#ff2a6d' if x > 0 else '#05d9e8' for x in df_resampled['損益試算']] # 霓虹紅/霓虹青
-    
+    colors = ['#ff2a6d' if x > 0 else '#05d9e8' for x in df_resampled['損益試算']]
     fig = go.Figure(data=[
         go.Bar(
             x=df_resampled.index,
@@ -150,7 +146,7 @@ def plot_period_bar(df_resampled, title):
     ])
     fig.update_layout(
         title=dict(text=title, font=dict(color='#e0e0e0', size=18)),
-        paper_bgcolor='rgba(0,0,0,0)', # 透明背景
+        paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         font=dict(color='#a0a0a0'),
         yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
@@ -158,12 +154,12 @@ def plot_period_bar(df_resampled, title):
     )
     return fig
 
-# --- Layout 版面配置 ---
+# --- App Layout ---
 
 app.layout = dbc.Container([
-    nebula_styles, # 注入 CSS
+    nebula_styles,
     
-    # 標題區
+    # 標題
     dbc.Row([
         dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)
     ]),
@@ -174,8 +170,7 @@ app.layout = dbc.Container([
             dcc.Upload(
                 id='upload-data',
                 children=html.Div([
-                    html.I(className="fas fa-cloud-upload-alt"), # 需要 FontAwesome，這裡用文字代替圖示
-                    ' 拖拉檔案至此 或 ', 
+                    '拖拉檔案至此 或 ', 
                     html.Span('點擊上傳 CSV', style={'textDecoration': 'underline', 'fontWeight': 'bold'})
                 ]),
                 style={
@@ -183,106 +178,71 @@ app.layout = dbc.Container([
                     'borderWidth': '1px', 'borderStyle': 'dashed',
                     'borderRadius': '10px', 'textAlign': 'center', 'margin': '10px'
                 },
-                className='upload-box', # 應用星雲樣式
+                className='upload-box',
                 multiple=False
             ),
             
-            # 動態進度條顯示區 (Client-side 控制)
+            # 動態進度條 (初始隱藏)
             html.Div([
-                html.Div(id='loading-text-display', className='loading-text'),
+                html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
                          style={'width': '100%', 'backgroundColor': '#1a1a2e', 'borderRadius': '2px'})
             ], id='progress-section', className='progress-container'),
             
-            html.Div(id='output-file-status', className="text-center text-muted mt-2")
         ], width={"size": 8, "offset": 2})
     ]),
 
     html.Hr(style={'borderColor': 'rgba(255,255,255,0.1)'}),
 
-    # 資料存儲
-    dcc.Store(id='stored-data'),
-
-    # 結果顯示區
+    # 資料儲存與輸出
     html.Div(id='output-content')
 
 ], fluid=True, style={'minHeight': '100vh'})
 
 # --- Callbacks ---
 
-# 1. 前端動畫 Callback (JavaScript)
-# 說明：當 upload-data 改變時，立即在瀏覽器端執行 JS，不需等待 Server 回應
+# 1. 前端動畫 JS (使用安全的 clientside callback)
+# 說明：當 upload-data 改變時，立即顯示進度條並開始跑數字
 app.clientside_callback(
     """
     function(contents, filename) {
         if (!contents) {
-            return [
-                {'display': 'none'}, 
-                '', 
-                {'width': '0%'}
-            ];
+            return {'display': 'none'};
         }
         
-        // 顯示進度條區域
-        // 注意：這裡無法真正得知後端進度，所以我們製作一個「假」的視覺動畫
-        // 透過 CSS transition 讓它看起來像在跑
+        // 1. 顯示容器
+        var container = document.getElementById('progress-section');
+        if (container) container.style.display = 'block';
+
+        // 2. 開始計時器動畫 (Direct DOM Manipulation)
+        var percent = 0;
+        var textDiv = document.getElementById('loading-text-display');
+        var barDiv = document.getElementById('progress-bar-inner');
         
-        return [
-            {'display': 'block'},  // 顯示容器
-            '正在載入 "' + filename + '" ... 0%', // 初始文字
-            {'width': '0%'} // 初始寬度
-        ];
+        // 清除舊的計時器 (防止重複)
+        if (window.uploadTimer) clearInterval(window.uploadTimer);
+        
+        window.uploadTimer = setInterval(function() {
+            if (percent < 99) {
+                percent += 1;
+                if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + percent + '%';
+                if (barDiv) barDiv.style.width = percent + '%';
+            }
+        }, 30); // 每 30ms 增加 1%
+        
+        // 返回 block 讓 Dash 知道要顯示它
+        return {'display': 'block'};
     }
     """,
-    [Output('progress-section', 'style'),
-     Output('loading-text-display', 'children'),
-     Output('progress-bar-inner', 'style')],
+    Output('progress-section', 'style'),
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')]
 )
 
-# 2. 為了實現「數字跳動」的效果，我們需要一個 Interval 觸發器
-# 但為了簡化代碼與依賴，我們使用簡單的 Server-side 處理完畢後直接顯示結果
-# 如果要嚴格的 0%->100% 數字跳動，通常需要更複雜的 JS。
-# 這裡我們用一個簡單的技巧：上傳後觸發，後端處理完後，畫面直接切換為結果。
-
-# 為了滿足您「0% 開始逐步增加」的需求，我們需要一個純 JS 的 Interval。
-# 以下增加一個隱藏的 Interval 觸發前端動畫
-app.clientside_callback(
-    """
-    function(contents, filename) {
-        if (!contents) return window.dash_clientside.no_update;
-        
-        let progress = 0;
-        const textDiv = document.getElementById('loading-text-display');
-        const barDiv = document.getElementById('progress-bar-inner');
-        
-        // 清除舊的 timer (如果有的話)
-        if (window.uploadTimer) clearInterval(window.uploadTimer);
-        
-        window.uploadTimer = setInterval(() => {
-            if (progress >= 99) {
-                clearInterval(window.uploadTimer);
-            } else {
-                progress += 1; // 每 30ms 增加 1%
-                if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + progress + '%';
-                if (barDiv) barDiv.style.width = progress + '%';
-            }
-        }, 30); // 速度設定
-        
-        return window.dash_clientside.no_update;
-    }
-    """,
-    Output('output-file-status', 'id'), # 隨意一個 Output，只為了觸發副作用
-    Input('upload-data', 'contents'),
-    State('upload-data', 'filename')
-)
-
-
-# 3. 後端數據處理 Callback
+# 2. 後端 Python 處理
 @app.callback(
     [Output('output-content', 'children'),
-     Output('progress-section', 'style', allow_duplicate=True)], # 處理完後隱藏進度條
+     Output('progress-section', 'style', allow_duplicate=True)], # 處理完後隱藏
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')],
     prevent_initial_call=True
@@ -296,7 +256,7 @@ def update_output(contents, filename):
     if error:
         return dbc.Alert(f"錯誤: {error}", color="danger"), {'display': 'none'}
 
-    # --- 數據運算 (與之前相同) ---
+    # 運算邏輯
     total_profit = df['損益試算'].sum()
     total_cost = df['買進金額'].sum()
     total_roi = (df['賣出金額'].sum() / total_cost) - 1
@@ -316,7 +276,7 @@ def update_output(contents, filename):
     quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
     quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
-    # --- 格式化 ---
+    # 格式化
     def fmt_df(d, m_cols, p_cols):
         d_f = d.copy()
         for c in m_cols: 
@@ -326,12 +286,11 @@ def update_output(contents, filename):
         if '成交日期' in d_f: d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
         return d_f
 
-    # --- 建立 UI 卡片 ---
     def create_card(title, value, is_money=True):
         color_class = "text-white"
         if is_money and isinstance(value, (int, float)):
-            if value > 0: color_class = "text-danger" # 紅色 (賺)
-            elif value < 0: color_class = "text-info" # 青色 (賠 - 星雲風格改用青/綠)
+            if value > 0: color_class = "text-danger" 
+            elif value < 0: color_class = "text-info"
             val_str = f"${value:,.0f}"
         elif not is_money and isinstance(value, float):
             val_str = f"{value:.2%}"
@@ -347,14 +306,13 @@ def update_output(contents, filename):
             ])
         ], className="mb-4")
 
-    # 摘要區
+    # 構建 UI
     summary_section = dbc.Row([
         dbc.Col(create_card("總獲利金額", total_profit), width=4),
         dbc.Col(create_card("總投入成本", total_cost), width=4),
         dbc.Col(create_card("總投資報酬率", total_roi, is_money=False), width=4),
     ])
 
-    # 分頁區
     tabs = dbc.Tabs([
         dbc.Tab(label="個股排行榜", children=[
             dbc.Row([
@@ -363,7 +321,7 @@ def update_output(contents, filename):
                 dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
                          generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
             ])
-        ], tab_style={'color': '#00f2ff'}, active_tab_style={'fontWeight': 'bold'}),
+        ], tab_style={'color': '#00f2ff'}),
         
         dbc.Tab(label="單筆排行榜", children=[
             dbc.Row([
@@ -382,8 +340,9 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    # 回傳結果，並將進度條隱藏 (display: none)
+    # 回傳結果與隱藏進度條 (style={'display': 'none'})
     return html.Div([summary_section, tabs]), {'display': 'none'}
 
 if __name__ == '__main__':
+    # 關閉 debug 模式以符合生產環境需求
     app.run_server(debug=False)
