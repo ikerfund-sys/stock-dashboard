@@ -63,7 +63,7 @@ nebula_css_string = '''
         background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
         box-shadow: 0 0 10px var(--neon-blue);
         border-radius: 2px;
-        transition: width 0.1s linear;
+        transition: width 0.3s ease-out; /* 讓動畫更順暢 */
     }
     .loading-text {
         color: var(--neon-blue);
@@ -89,8 +89,11 @@ nebula_css_string = '''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
+    /* 預設隱藏結果區 */
     #content-wrapper {
         display: none;
+        opacity: 0;
+        transition: opacity 0.5s ease-in;
     }
 '''
 
@@ -118,8 +121,8 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 模擬運算時間 (可根據實際需求調整或移除)
-        time.sleep(1.0)
+        # 模擬運算
+        time.sleep(1.2)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -192,7 +195,7 @@ app.layout = dbc.Container([
                 className='upload-box',
                 multiple=False
             ),
-            # 進度條
+            # 進度條區域
             html.Div([
                 html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
@@ -232,7 +235,7 @@ def update_output(contents, filename):
     if error:
         return dbc.Alert(f"錯誤: {error}", color="danger"), "ERROR"
 
-    # --- 運算邏輯 ---
+    # 運算邏輯
     total_profit = df['損益試算'].sum()
     total_cost = df['買進金額'].sum()
     total_roi = (df['賣出金額'].sum() / total_cost) - 1
@@ -311,38 +314,38 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    # 回傳結果與時間戳 (信號)
+    # 回傳當前時間作為唯一信號
     return html.Div([summary, tabs]), str(time.time())
 
-# 2. Client-side JS Logic
-# 使用數值比對 (Value Comparison) 取代事件觸發 (Event Trigger) 偵測
+# 2. Client-side Logic (使用 Trigger 偵測，這是解決卡住問題的關鍵)
 app.clientside_callback(
     """
     function(contents, signal, filename) {
-        // 1. 初始化全域變數 (Global State)
-        if (!window.prevContents) window.prevContents = null;
-        if (!window.prevSignal) window.prevSignal = null;
+        // 取得是誰觸發了這次回調 (Dash 官方 API)
+        var triggers = dash_clientside.callback_context.triggered.map(t => t.prop_id);
+        
+        var isUpload = triggers.some(t => t.includes('upload-data.contents'));
+        var isSignal = triggers.some(t => t.includes('signal-store.data'));
 
         var container = document.getElementById('progress-section');
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
         var contentWrapper = document.getElementById('content-wrapper');
 
-        // --- 偵測：是否上傳了新檔案 (Start) ---
-        // 條件：contents 變了，且不為空
-        if (contents && contents !== window.prevContents) {
-            window.prevContents = contents; // 更新狀態
-            
-            // UI 重置
-            if (contentWrapper) contentWrapper.style.display = 'none';
+        // --- 狀況 1: 上傳觸發 (Start) ---
+        if (isUpload) {
+            // 隱藏舊結果
+            if (contentWrapper) {
+                contentWrapper.style.opacity = '0';
+                contentWrapper.style.display = 'none';
+            }
             if (container) container.style.display = 'block';
-            if (barDiv) barDiv.style.width = '0%';
             
             // 清除舊計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
             var percent = 0;
-            // 設定目標：先跑到 90% 等待後端
+            // 設定目標：只能跑到 90%
             window.targetPercent = 90; 
             
             // 啟動計時器
@@ -352,44 +355,32 @@ app.clientside_callback(
                     if (textDiv) textDiv.innerText = '正在載入 "' + (filename || '檔案') + '" ... ' + percent + '%';
                     if (barDiv) barDiv.style.width = percent + '%';
                 }
-                // 到了 90% 就停住，等待後端信號
             }, 30);
             
             return {'display': 'block'};
         }
 
-        // --- 偵測：是否收到了新信號 (Finish) ---
-        // 條件：signal 變了，且不為空
-        if (signal && signal !== window.prevSignal) {
-            window.prevSignal = signal; // 更新狀態
-            
-            // 解鎖目標到 100%
-            window.targetPercent = 100;
-            
-            // 為了視覺連貫，我們不清除 timer，而是修改它的行為 (或者開一個加速 timer)
+        // --- 狀況 2: 信號觸發 (Finish) ---
+        if (isSignal) {
+            // 立即停止舊計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
-            // 取得當前進度 (避免跳針)
-            var currentWidth = barDiv ? parseInt(barDiv.style.width) : 0;
-            var percent = currentWidth || 0;
-
-            // 開啟「衝刺模式」計時器
-            window.uploadTimer = setInterval(function() {
-                if (percent < 100) {
-                    percent += 2; // 加速跑
-                    if (percent > 100) percent = 100;
-                    if (textDiv) textDiv.innerText = '解析完成 ... ' + percent + '%';
-                    if (barDiv) barDiv.style.width = percent + '%';
-                } else {
-                    // 真正到達 100% -> 顯示結果
-                    clearInterval(window.uploadTimer);
-                    setTimeout(function(){
-                         if (container) container.style.display = 'none';
-                         // ★★★ 關鍵時刻：這時候才顯示分析報表 ★★★
-                         if (contentWrapper) contentWrapper.style.display = 'block'; 
-                    }, 200);
+            // 直接顯示 100% (不跑動畫了，避免延遲)
+            if (textDiv) textDiv.innerText = '解析完成！';
+            if (barDiv) barDiv.style.width = '100%';
+            
+            // 設定延遲顯示結果
+            setTimeout(function(){
+                // 隱藏進度條
+                if (container) container.style.display = 'none';
+                
+                // 顯示結果 (淡入效果)
+                if (contentWrapper) {
+                    contentWrapper.style.display = 'block';
+                    // 為了觸發 transition，需要一點點延遲
+                    setTimeout(() => { contentWrapper.style.opacity = '1'; }, 50);
                 }
-            }, 5); // 極速 (5ms)
+            }, 600); // 讓使用者看到 100% 停留 0.6 秒
             
             return {'display': 'block'};
         }
