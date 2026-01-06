@@ -14,7 +14,7 @@ import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-# --- 2. CSS 定義 ---
+# --- CSS 定義 ---
 nebula_css_string = '''
     :root {
         --bg-color: #050510;
@@ -63,14 +63,13 @@ nebula_css_string = '''
         background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
         box-shadow: 0 0 10px var(--neon-blue);
         border-radius: 2px;
-        transition: width 0.1s linear; /* 讓寬度變化更滑順 */
+        transition: width 0.1s linear;
     }
     .loading-text {
         color: var(--neon-blue);
         font-family: monospace;
         margin-bottom: 5px;
     }
-    /* 表格與分頁樣式 */
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
         background-color: #1f1f2e !important;
         color: var(--neon-blue) !important;
@@ -90,17 +89,16 @@ nebula_css_string = '''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
-    /* 隱藏內容的容器 */
     #content-wrapper {
-        display: none; /* 預設隱藏，由 JS 控制顯示時機 */
+        display: none;
     }
 '''
 
-# --- 3. CSS 轉碼 (Data URI) ---
+# --- CSS 轉碼 ---
 encoded_css = urllib.parse.quote(nebula_css_string)
 css_data_uri = f"data:text/css;charset=utf-8,{encoded_css}"
 
-# --- 4. 初始化 Dash ---
+# --- 初始化 Dash ---
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.DARKLY, css_data_uri]
@@ -120,8 +118,8 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 這裡為了展示「加速效果」，我把等待時間縮短一點
-        time.sleep(1.0) 
+        # 模擬運算時間 (可根據實際需求調整或移除)
+        time.sleep(1.0)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -178,7 +176,6 @@ def plot_period_bar(df_resampled, title):
 app.layout = dbc.Container([
     dbc.Row([dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)]),
 
-    # 上傳區
     dbc.Row([
         dbc.Col([
             dcc.Upload(
@@ -209,7 +206,6 @@ app.layout = dbc.Container([
 
     dcc.Store(id='signal-store'),
     
-    # 包裹一層 Wrapper，透過 ID 讓 JS 控制它的顯示/隱藏
     html.Div(id='content-wrapper', children=[
         html.Div(id='output-content')
     ])
@@ -219,7 +215,7 @@ app.layout = dbc.Container([
 
 # --- Callbacks ---
 
-# 1. Server-side (Python 處理數據)
+# 1. Server-side Logic
 @app.callback(
     [Output('output-content', 'children'),
      Output('signal-store', 'data')],
@@ -256,7 +252,6 @@ def update_output(contents, filename):
     quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
     quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
-    # 格式化
     def fmt_df(d, m_cols, p_cols):
         d_f = d.copy()
         for c in m_cols: 
@@ -285,7 +280,6 @@ def update_output(contents, filename):
             ])
         ], className="mb-4")
 
-    # 構建 UI
     summary = dbc.Row([
         dbc.Col(create_card("總獲利金額", total_profit), width=4),
         dbc.Col(create_card("總投入成本", total_cost), width=4),
@@ -317,91 +311,87 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    # 這裡回傳 UI 內容，但 content-wrapper 預設是 display: none 的
-    # 必須等 JS 動畫跑到 100% 才會由 JS 將其打開
+    # 回傳結果與時間戳 (信號)
     return html.Div([summary, tabs]), str(time.time())
 
-# 2. Client-side JS (控制動畫與顯示邏輯)
+# 2. Client-side JS Logic
+# 使用數值比對 (Value Comparison) 取代事件觸發 (Event Trigger) 偵測
 app.clientside_callback(
     """
     function(contents, signal, filename) {
-        var ctx = dash_clientside.callback_context;
-        var triggered = ctx.triggered.map(t => t.prop_id);
-
-        var is_upload = triggered.some(t => t.includes('upload-data.contents'));
-        var is_done = triggered.some(t => t.includes('signal-store.data'));
+        // 1. 初始化全域變數 (Global State)
+        if (!window.prevContents) window.prevContents = null;
+        if (!window.prevSignal) window.prevSignal = null;
 
         var container = document.getElementById('progress-section');
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
         var contentWrapper = document.getElementById('content-wrapper');
 
-        // --- 情境 A: 剛上傳檔案 (Start) ---
-        if (is_upload && contents) {
-            // 1. 強制隱藏分析結果
+        // --- 偵測：是否上傳了新檔案 (Start) ---
+        // 條件：contents 變了，且不為空
+        if (contents && contents !== window.prevContents) {
+            window.prevContents = contents; // 更新狀態
+            
+            // UI 重置
             if (contentWrapper) contentWrapper.style.display = 'none';
             if (container) container.style.display = 'block';
+            if (barDiv) barDiv.style.width = '0%';
             
-            // 2. 重置計數器
+            // 清除舊計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
             var percent = 0;
-            // 設定目標值：如果後端還沒算完，最多跑到 90% 就停住等待
+            // 設定目標：先跑到 90% 等待後端
             window.targetPercent = 90; 
             
-            // 3. 啟動慢速計時器 (模擬載入)
+            // 啟動計時器
             window.uploadTimer = setInterval(function() {
-                // 如果還沒到目標，就慢慢加
                 if (percent < window.targetPercent) {
                     percent += 1;
                     if (textDiv) textDiv.innerText = '正在載入 "' + (filename || '檔案') + '" ... ' + percent + '%';
                     if (barDiv) barDiv.style.width = percent + '%';
                 }
-                
-                // 如果已經 100% 了 (代表後端算完且前端加速完畢)
-                if (percent >= 100) {
-                    clearInterval(window.uploadTimer);
-                    // 顯示分析結果！
-                    setTimeout(function(){
-                         if (container) container.style.display = 'none';
-                         if (contentWrapper) contentWrapper.style.display = 'block'; // 關鍵：撞線才顯示
-                    }, 300);
-                }
-            }, 30); // 正常速度
+                // 到了 90% 就停住，等待後端信號
+            }, 30);
             
             return {'display': 'block'};
         }
 
-        // --- 情境 B: 後端算完了 (Finish Signal) ---
-        if (is_done) {
-            // 1. 解除封印，目標設為 100%
+        // --- 偵測：是否收到了新信號 (Finish) ---
+        // 條件：signal 變了，且不為空
+        if (signal && signal !== window.prevSignal) {
+            window.prevSignal = signal; // 更新狀態
+            
+            // 解鎖目標到 100%
             window.targetPercent = 100;
             
-            // 2. 加速衝刺！ (清除舊 timer，開一個超快的 timer)
+            // 為了視覺連貫，我們不清除 timer，而是修改它的行為 (或者開一個加速 timer)
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
-            // 繼承當前的 percent
+            // 取得當前進度 (避免跳針)
             var currentWidth = barDiv ? parseInt(barDiv.style.width) : 0;
             var percent = currentWidth || 0;
 
+            // 開啟「衝刺模式」計時器
             window.uploadTimer = setInterval(function() {
                 if (percent < 100) {
-                    percent += 2; // 一次跳 2%，加速效果
+                    percent += 2; // 加速跑
                     if (percent > 100) percent = 100;
-                    
                     if (textDiv) textDiv.innerText = '解析完成 ... ' + percent + '%';
                     if (barDiv) barDiv.style.width = percent + '%';
                 } else {
-                    // 撞線！
+                    // 真正到達 100% -> 顯示結果
                     clearInterval(window.uploadTimer);
                     setTimeout(function(){
                          if (container) container.style.display = 'none';
-                         if (contentWrapper) contentWrapper.style.display = 'block'; // 關鍵：撞線才顯示
-                    }, 300);
+                         // ★★★ 關鍵時刻：這時候才顯示分析報表 ★★★
+                         if (contentWrapper) contentWrapper.style.display = 'block'; 
+                    }, 200);
                 }
             }, 5); // 極速 (5ms)
             
-            return {'display': 'block'}; // 保持進度條顯示，直到上面 timer 跑完自動隱藏
+            return {'display': 'block'};
         }
 
         return window.dash_clientside.no_update;
