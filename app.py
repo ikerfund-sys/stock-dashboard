@@ -1,6 +1,7 @@
 import base64
 import io
 import time
+import urllib.parse  # 新增：用於 CSS 轉碼
 import pandas as pd
 import dash
 from dash import dcc, html, dash_table
@@ -9,18 +10,12 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import mimetypes
 
-# 1. 強制修正 MIME Types (解決 Render 載入卡住問題)
+# 1. 修正 MIME Types
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-# 2. 初始化 Dash (移除導致報錯的 prevent_initial_callbacks 參數)
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
-app.title = "對帳單解析"
-
-server = app.server
-
-# 3. 星雲設計系統 CSS
-nebula_styles = html.Style('''
+# --- 2. 定義星雲風格 CSS (改為字串變數) ---
+nebula_css_string = '''
     :root {
         --bg-color: #050510;
         --card-bg: rgba(20, 20, 35, 0.7);
@@ -94,7 +89,22 @@ nebula_styles = html.Style('''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
-''')
+'''
+
+# --- 3. 將 CSS 轉換為 Data URI (繞過 html.Style 報錯的核心) ---
+# 這段程式碼會把上面的 CSS 字串打包成一個網址，騙過瀏覽器讓它以為是外部檔案
+encoded_css = urllib.parse.quote(nebula_css_string)
+css_data_uri = f"data:text/css;charset=utf-8,{encoded_css}"
+
+# --- 4. 初始化 Dash ---
+app = dash.Dash(
+    __name__, 
+    # 在這裡注入 CSS，而不是在 Layout 裡面使用 html.Style
+    external_stylesheets=[dbc.themes.DARKLY, css_data_uri]
+)
+app.title = "對帳單解析"
+
+server = app.server
 
 # --- 輔助函式 ---
 def parse_contents(contents, filename):
@@ -160,10 +170,10 @@ def plot_period_bar(df_resampled, title):
     )
     return fig
 
-# --- Layout ---
+# --- Layout (不再包含 nebula_styles 變數) ---
 
 app.layout = dbc.Container([
-    nebula_styles,
+    # CSS 已經透過 external_stylesheets 載入，這裡不需要 html.Style 了
     
     dbc.Row([dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)]),
 
@@ -196,18 +206,15 @@ app.layout = dbc.Container([
 
     html.Hr(style={'borderColor': 'rgba(255,255,255,0.1)'}),
 
-    # 信號儲存器 (用於控制動畫結束)
     dcc.Store(id='signal-store'),
-    
-    # 結果輸出
     html.Div(id='output-content')
 
 ], fluid=True, style={'minHeight': '100vh'})
 
 
-# --- Callbacks (改用單一控制源，避免衝突) ---
+# --- Callbacks ---
 
-# 1. Server-side: 處理資料，並發送「完成信號」
+# 1. Server-side
 @app.callback(
     [Output('output-content', 'children'),
      Output('signal-store', 'data')],
@@ -288,7 +295,7 @@ def update_output(contents, filename):
                 dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
                          generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
             ])
-        ], tab_style={'color': '#00f2ff'}),
+        ]),
         dbc.Tab(label="單筆排行榜", children=[
             dbc.Row([
                 dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
@@ -305,13 +312,12 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    return html.Div([summary, tabs]), str(time.time()) # 回傳時間戳記當作「完成信號」
+    return html.Div([summary, tabs]), str(time.time())
 
-# 2. Client-side: 統一控制進度條 (監聽 上傳動作 與 完成信號)
+# 2. Client-side
 app.clientside_callback(
     """
     function(contents, signal, filename) {
-        // 取得觸發來源 (是上傳了檔案? 還是運算完成了?)
         var triggered = dash_clientside.callback_context.triggered.map(t => t.prop_id);
         var is_upload = triggered.some(t => t.includes('upload-data.contents'));
         var is_done = triggered.some(t => t.includes('signal-store.data'));
@@ -320,11 +326,9 @@ app.clientside_callback(
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
 
-        // 情況 A: 剛上傳檔案 -> 顯示進度條，開始跑動畫
         if (is_upload && contents) {
             if (container) container.style.display = 'block';
             
-            // 清除舊 timer
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
             var percent = 0;
@@ -334,23 +338,21 @@ app.clientside_callback(
                     if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + percent + '%';
                     if (barDiv) barDiv.style.width = percent + '%';
                 }
-            }, 30); // 動畫速度
+            }, 30);
             
             return {'display': 'block'};
         }
 
-        // 情況 B: 收到完成信號 -> 隱藏進度條，停止動畫
         if (is_done) {
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             if (barDiv) barDiv.style.width = '100%';
             if (textDiv) textDiv.innerText = '解析完成！';
             
-            // 延遲一下再消失，讓使用者看到 100%
             setTimeout(function(){
                 if (container) container.style.display = 'none';
             }, 500);
             
-            return {'display': 'none'}; // 這裡其實會被 setTimeout 蓋過，主要為了邏輯完整
+            return {'display': 'none'};
         }
 
         return {'display': 'none'};
@@ -358,7 +360,7 @@ app.clientside_callback(
     """,
     Output('progress-section', 'style'),
     [Input('upload-data', 'contents'),
-     Input('signal-store', 'data')], # 監聽這兩個
+     Input('signal-store', 'data')],
     [State('upload-data', 'filename')]
 )
 
