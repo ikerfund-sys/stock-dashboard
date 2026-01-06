@@ -7,6 +7,11 @@ from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
+import mimetypes
+
+# 強制修正 MIME types，避免 Render 誤判為 text/plain
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 # 初始化 Dash 應用程式，使用 Bootstrap 主題美化
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
@@ -304,4 +309,5 @@ def update_graphs(jsonified_cleaned_data):
 
 if __name__ == '__main__':
     # debug=True 方便開發時除錯，部署時通常不影響，但建議改為 False
+
     app.run_server(debug=True)
