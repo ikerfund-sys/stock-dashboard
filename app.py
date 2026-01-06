@@ -91,11 +91,11 @@ nebula_css_string = '''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
-    /* 關鍵：結果顯示區預設為隱藏，透明度為0 */
+    /* 結果顯示區預設為隱藏 */
     #content-wrapper {
         display: none;
         opacity: 0;
-        transition: opacity 0.8s ease-in; /* 淡入效果 */
+        transition: opacity 0.8s ease-in;
     }
 '''
 
@@ -209,9 +209,10 @@ app.layout = dbc.Container([
 
     html.Hr(style={'borderColor': 'rgba(255,255,255,0.1)'}),
 
+    # 信號儲存器
     dcc.Store(id='signal-store'),
     
-    # 包裹內容的容器 (由 JS 控制顯示)
+    # 包裹內容的容器
     html.Div(id='content-wrapper', children=[
         html.Div(id='output-content')
     ])
@@ -236,13 +237,13 @@ def update_output(contents, filename):
     try:
         df, error = parse_contents(contents, filename)
         
-        # 產生唯一的完成信號 (使用時間戳)
+        # 產生完成信號 (時間戳)
         finish_signal = f"DONE_{time.time()}"
         
         if error:
             return dbc.Alert(f"錯誤: {error}", color="danger"), finish_signal
 
-        # 運算邏輯
+        # --- 運算邏輯 ---
         total_profit = df['損益試算'].sum()
         total_cost = df['買進金額'].sum()
         total_roi = (df['賣出金額'].sum() / total_cost) - 1
@@ -321,22 +322,20 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    return html.Div([summary, tabs]), finish_signal
+        # 這裡將 UI 和 信號 一起回傳
+        return html.Div([summary, tabs]), finish_signal
 
     except Exception as e:
         print(traceback.format_exc())
         return dbc.Alert(f"系統錯誤: {str(e)}", color="danger"), f"ERROR_{time.time()}"
 
 # 2. Client-side Logic (JavaScript)
-# 修正邏輯：不看 context，只看變數是否更新
+# 邏輯：監聽 last_modified (開始信號) 與 signal (結束信號)
 app.clientside_callback(
     """
     function(last_modified, signal, filename) {
-        console.log("JS Callback Triggered!");
-        console.log("Last Modified:", last_modified);
-        console.log("Signal:", signal);
+        console.log("JS Triggered. Signal:", signal, "LastMod:", last_modified);
 
-        // 初始化全域狀態
         if (window.lastProcessedUpload === undefined) window.lastProcessedUpload = null;
         if (window.lastProcessedSignal === undefined) window.lastProcessedSignal = null;
 
@@ -345,22 +344,20 @@ app.clientside_callback(
         var barDiv = document.getElementById('progress-bar-inner');
         var contentWrapper = document.getElementById('content-wrapper');
 
-        // --- 邏輯 A: 檢查是否有「新的完成信號」 (優先權最高) ---
-        // 如果 signal 變了，且不為空 -> 代表 Python 算完了
+        // --- 邏輯 A: 檢查是否有「新的完成信號」 ---
         if (signal && signal !== window.lastProcessedSignal) {
-            console.log(">>> ACTION: FINISH (Signal changed)");
-            window.lastProcessedSignal = signal; // 標記為已處理
+            console.log(">>> FINISH SIGNAL RECEIVED");
+            window.lastProcessedSignal = signal;
             
-            // 立即停止所有計時器
+            // 停止計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
-            // UI 強制顯示 100%
+            // 強制 100%
             if (textDiv) textDiv.innerText = '解析完成！ 100%';
             if (barDiv) barDiv.style.width = '100%';
             
             // 延遲顯示結果
             setTimeout(function(){
-                console.log(">>> UI: Showing Result");
                 if (container) container.style.display = 'none';
                 if (contentWrapper) {
                     contentWrapper.style.display = 'block';
@@ -372,12 +369,11 @@ app.clientside_callback(
         }
 
         // --- 邏輯 B: 檢查是否有「新的上傳」 ---
-        // 如果 last_modified 變了，且不為空 -> 代表剛上傳
         if (last_modified && last_modified !== window.lastProcessedUpload) {
-            console.log(">>> ACTION: START (Upload detected)");
-            window.lastProcessedUpload = last_modified; // 標記為已處理
+            console.log(">>> UPLOAD DETECTED");
+            window.lastProcessedUpload = last_modified;
             
-            // 重置 UI：隱藏結果，顯示進度條
+            // UI 重置
             if (contentWrapper) {
                 contentWrapper.style.opacity = '0';
                 contentWrapper.style.display = 'none';
@@ -385,7 +381,7 @@ app.clientside_callback(
             if (container) container.style.display = 'block';
             if (barDiv) barDiv.style.width = '0%';
             
-            // 啟動 0% -> 90% 計時器
+            // 啟動計時器 (0% -> 90%)
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             var percent = 0;
             window.targetPercent = 90; 
@@ -401,7 +397,6 @@ app.clientside_callback(
             return {'display': 'block'};
         }
 
-        console.log(">>> No action taken (inputs identical to last run)");
         return window.dash_clientside.no_update;
     }
     """,
