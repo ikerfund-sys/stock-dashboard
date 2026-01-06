@@ -152,6 +152,10 @@ def normalize_dataframe(df):
     # 已實現.xlsx: B欄是「類別」(文字，如融資、現股)
     # 證券_歷史已實損益.xlsx: B欄是「成交日期」(日期格式)
     
+    # 防呆：確保欄位足夠
+    if df.shape[1] < 3:
+        return df
+
     first_row_b_val = str(df.iloc[0, 1]).strip()
     
     is_history_format = False
@@ -209,6 +213,8 @@ def parse_contents(contents, filename):
     decoded = base64.b64decode(content_string)
     try:
         df = None
+        
+        # 1. 嘗試解析為 CSV
         if 'csv' in filename.lower():
             try:
                 # 優先嘗試 UTF-8
@@ -216,13 +222,30 @@ def parse_contents(contents, filename):
             except:
                 # 若失敗則嘗試 Big5 (常見於舊版 Excel 匯出的 CSV)
                 df = pd.read_csv(io.StringIO(decoded.decode('big5')))
+                
+        # 2. 嘗試解析為 Excel
         elif 'xls' in filename.lower():
-            df = pd.read_excel(io.BytesIO(decoded))
+            # 針對 "Error: Excel file format cannot be determined" 的修復
+            try:
+                # 嘗試使用 openpyxl (針對 .xlsx)
+                df = pd.read_excel(io.BytesIO(decoded), engine='openpyxl')
+            except Exception:
+                try:
+                    # 如果失敗，嘗試使用 xlrd (針對舊版 .xls)
+                    df = pd.read_excel(io.BytesIO(decoded), engine='xlrd')
+                except Exception:
+                    try:
+                        # 最後手段：有些券商的 "xls" 其實是 HTML 表格
+                        dfs = pd.read_html(io.BytesIO(decoded), encoding='utf-8')
+                        if dfs:
+                            df = dfs[0]
+                    except:
+                        return None, "無法識別的 Excel 格式，請確認檔案未損壞"
         else:
             return None, "不支援的檔案格式"
         
         # 模擬運算延遲
-        time.sleep(1.0)
+        time.sleep(0.5)
         
         # --- 呼叫標準化函式 ---
         if df is not None:
@@ -257,7 +280,16 @@ def generate_table(dataframe, display_cols=None):
         data=df_display.to_dict('records'),
         columns=[{'name': i, 'id': i} for i in df_display.columns],
         style_table={'overflowX': 'auto'},
-        page_size=10
+        page_size=10,
+        style_header={
+            'backgroundColor': '#1f1f2e',
+            'color': '#00f2ff',
+            'fontWeight': 'bold'
+        },
+        style_data={
+            'backgroundColor': 'rgba(20, 20, 35, 0.7)',
+            'color': 'white'
+        }
     )
 
 def plot_period_bar(df_resampled, title):
@@ -364,9 +396,17 @@ def update_output(contents, filename):
         bottom_5_tx = df.sort_values(by='損益試算', ascending=True).head(5)
 
         df_time = df.set_index('成交日期').sort_index()
-        monthly_perf = df_time.resample('ME')[['損益試算']].sum() # pandas新版建議使用 'ME' 代替 'M'
+        
+        # pandas新版建議使用 'ME' (Month End) 代替 'M', 'QE' 代替 'Q'
+        try:
+            monthly_perf = df_time.resample('ME')[['損益試算']].sum()
+            quarterly_perf = df_time.resample('QE')[['損益試算']].sum()
+        except:
+            # 舊版 pandas 相容
+            monthly_perf = df_time.resample('M')[['損益試算']].sum()
+            quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
+
         monthly_perf.index = monthly_perf.index.strftime('%Y-%m')
-        quarterly_perf = df_time.resample('QE')[['損益試算']].sum() # pandas新版建議使用 'QE' 代替 'Q'
         quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
         def fmt_df(d, m_cols, p_cols):
@@ -376,7 +416,7 @@ def update_output(contents, filename):
             for c in p_cols: 
                 if c in d_f: d_f[c] = d_f[c].apply(format_percent)
             if '成交日期' in d_f: 
-                # 檢查是否為 datetime 物件，如果是則格式化，否則保留字串
+                # 檢查是否為 datetime 物件
                 if pd.api.types.is_datetime64_any_dtype(d_f['成交日期']):
                     d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
             return d_f
