@@ -9,18 +9,23 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import mimetypes
 
-# 1. 修正 MIME Types (解決 Render 載入卡住問題)
+# 1. 強制修正 MIME Types (解決 Render 載入卡住問題)
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-# 2. 初始化 Dash (使用 DARKLY 主題)
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
+# 2. 初始化 Dash 
+# ★★★ 關鍵修正：必須加入 prevent_initial_callbacks="initial_duplicate" 才能使用多重 Output ★★★
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.DARKLY],
+    prevent_initial_callbacks="initial_duplicate" 
+)
 app.title = "對帳單解析"
 
-# 3. 關鍵：暴露 server 變數給 Gunicorn
+# 3. 暴露 server 變數給 Gunicorn (部署必備)
 server = app.server
 
-# 4. 星雲風格 CSS (移除註解以防解析錯誤)
+# 4. 星雲設計系統 CSS
 nebula_styles = html.Style('''
     :root {
         --bg-color: #050510;
@@ -76,19 +81,30 @@ nebula_styles = html.Style('''
         font-family: monospace;
         margin-bottom: 5px;
     }
+    /* 表格樣式優化 */
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
         background-color: #1f1f2e !important;
         color: var(--neon-blue) !important;
         border-bottom: 1px solid var(--neon-blue) !important;
+        font-weight: bold;
     }
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td {
         background-color: var(--card-bg) !important;
         color: #fff !important;
         border: none !important;
     }
+    /* 分頁標籤樣式 */
+    .nav-tabs .nav-link.active {
+        background-color: var(--card-bg) !important;
+        border-color: var(--neon-blue) !important;
+        color: var(--neon-blue) !important;
+    }
+    .nav-tabs .nav-link {
+        color: #888 !important;
+    }
 ''')
 
-# --- 輔助函式 ---
+# --- 邏輯運算函式 ---
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
@@ -100,8 +116,8 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 模擬運算延遲，讓動畫跑一下
-        time.sleep(1.2)
+        # 模擬運算延遲 (為了讓動畫跑完)
+        time.sleep(1.5)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -135,7 +151,8 @@ def generate_table(dataframe, display_cols=None):
     )
 
 def plot_period_bar(df_resampled, title):
-    colors = ['#ff2a6d' if x > 0 else '#05d9e8' for x in df_resampled['損益試算']]
+    # 霓虹配色：紅 vs 青
+    colors = ['#ff2a6d' if x > 0 else '#00f2ff' for x in df_resampled['損益試算']]
     fig = go.Figure(data=[
         go.Bar(
             x=df_resampled.index,
@@ -149,17 +166,16 @@ def plot_period_bar(df_resampled, title):
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         font=dict(color='#a0a0a0'),
-        yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.1)', zerolinecolor='rgba(255,255,255,0.2)'),
         margin=dict(l=40, r=40, t=40, b=40)
     )
     return fig
 
-# --- App Layout ---
+# --- Layout ---
 
 app.layout = dbc.Container([
     nebula_styles,
     
-    # 標題
     dbc.Row([
         dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)
     ]),
@@ -182,7 +198,7 @@ app.layout = dbc.Container([
                 multiple=False
             ),
             
-            # 動態進度條 (初始隱藏)
+            # 動態進度條
             html.Div([
                 html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
@@ -194,15 +210,14 @@ app.layout = dbc.Container([
 
     html.Hr(style={'borderColor': 'rgba(255,255,255,0.1)'}),
 
-    # 資料儲存與輸出
+    # 結果輸出區
     html.Div(id='output-content')
 
 ], fluid=True, style={'minHeight': '100vh'})
 
 # --- Callbacks ---
 
-# 1. 前端動畫 JS (使用安全的 clientside callback)
-# 說明：當 upload-data 改變時，立即顯示進度條並開始跑數字
+# 1. 前端動畫 JS (Client-side)
 app.clientside_callback(
     """
     function(contents, filename) {
@@ -210,27 +225,24 @@ app.clientside_callback(
             return {'display': 'none'};
         }
         
-        // 1. 顯示容器
         var container = document.getElementById('progress-section');
         if (container) container.style.display = 'block';
 
-        // 2. 開始計時器動畫 (Direct DOM Manipulation)
         var percent = 0;
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
         
-        // 清除舊的計時器 (防止重複)
         if (window.uploadTimer) clearInterval(window.uploadTimer);
         
+        // 模擬 0% -> 99% 的跑條
         window.uploadTimer = setInterval(function() {
             if (percent < 99) {
                 percent += 1;
                 if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + percent + '%';
                 if (barDiv) barDiv.style.width = percent + '%';
             }
-        }, 30); // 每 30ms 增加 1%
+        }, 20); // 速度設定
         
-        // 返回 block 讓 Dash 知道要顯示它
         return {'display': 'block'};
     }
     """,
@@ -242,7 +254,7 @@ app.clientside_callback(
 # 2. 後端 Python 處理
 @app.callback(
     [Output('output-content', 'children'),
-     Output('progress-section', 'style', allow_duplicate=True)], # 處理完後隱藏
+     Output('progress-section', 'style', allow_duplicate=True)], 
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')],
     prevent_initial_call=True
@@ -256,7 +268,7 @@ def update_output(contents, filename):
     if error:
         return dbc.Alert(f"錯誤: {error}", color="danger"), {'display': 'none'}
 
-    # 運算邏輯
+    # 運算
     total_profit = df['損益試算'].sum()
     total_cost = df['買進金額'].sum()
     total_roi = (df['賣出金額'].sum() / total_cost) - 1
@@ -276,7 +288,6 @@ def update_output(contents, filename):
     quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
     quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
-    # 格式化
     def fmt_df(d, m_cols, p_cols):
         d_f = d.copy()
         for c in m_cols: 
@@ -290,7 +301,7 @@ def update_output(contents, filename):
         color_class = "text-white"
         if is_money and isinstance(value, (int, float)):
             if value > 0: color_class = "text-danger" 
-            elif value < 0: color_class = "text-info"
+            elif value < 0: color_class = "text-info" # 青色代表賠
             val_str = f"${value:,.0f}"
         elif not is_money and isinstance(value, float):
             val_str = f"{value:.2%}"
@@ -321,7 +332,7 @@ def update_output(contents, filename):
                 dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
                          generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
             ])
-        ], tab_style={'color': '#00f2ff'}),
+        ]),
         
         dbc.Tab(label="單筆排行榜", children=[
             dbc.Row([
@@ -340,9 +351,7 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    # 回傳結果與隱藏進度條 (style={'display': 'none'})
     return html.Div([summary_section, tabs]), {'display': 'none'}
 
 if __name__ == '__main__':
-    # 關閉 debug 模式以符合生產環境需求
     app.run_server(debug=False)
