@@ -64,13 +64,14 @@ nebula_css_string = '''
         background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
         box-shadow: 0 0 10px var(--neon-blue);
         border-radius: 2px;
-        transition: width 0.3s ease-out;
+        transition: width 0.2s ease-out;
     }
     .loading-text {
         color: var(--neon-blue);
         font-family: monospace;
         margin-bottom: 5px;
     }
+    /* 表格樣式 */
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
         background-color: #1f1f2e !important;
         color: var(--neon-blue) !important;
@@ -90,10 +91,11 @@ nebula_css_string = '''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
+    /* 關鍵：結果顯示區預設為隱藏，透明度為0 */
     #content-wrapper {
         display: none;
         opacity: 0;
-        transition: opacity 0.5s ease-in;
+        transition: opacity 0.8s ease-in; /* 淡入效果 */
     }
 '''
 
@@ -121,7 +123,7 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 模擬運算
+        # 模擬運算延遲
         time.sleep(1.0)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
@@ -195,7 +197,7 @@ app.layout = dbc.Container([
                 className='upload-box',
                 multiple=False
             ),
-            # 進度條
+            # 進度條 (初始為隱藏)
             html.Div([
                 html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
@@ -209,6 +211,7 @@ app.layout = dbc.Container([
 
     dcc.Store(id='signal-store'),
     
+    # 包裹內容的容器 (由 JS 控制顯示)
     html.Div(id='content-wrapper', children=[
         html.Div(id='output-content')
     ])
@@ -233,9 +236,11 @@ def update_output(contents, filename):
     try:
         df, error = parse_contents(contents, filename)
         
+        # 產生唯一的完成信號 (使用時間戳)
+        finish_signal = f"DONE_{time.time()}"
+        
         if error:
-            # 發生錯誤也要回傳信號，不然前端會一直卡在 Loading
-            return dbc.Alert(f"錯誤: {error}", color="danger"), f"ERROR_{time.time()}"
+            return dbc.Alert(f"錯誤: {error}", color="danger"), finish_signal
 
         # 運算邏輯
         total_profit = df['損益試算'].sum()
@@ -305,45 +310,74 @@ def update_output(contents, filename):
                     dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
                              generate_table(fmt_df(top_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6),
                     dbc.Col([html.H5("📉 單筆虧損王", className="mt-3 text-center"), 
-                             generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
-                ])
-            ]),
-            dbc.Tab(label="週期趨勢", children=[
-                dbc.Row([
-                    dbc.Col(dcc.Graph(figure=plot_period_bar(monthly_perf, "逐月損益")), width=6),
-                    dbc.Col(dcc.Graph(figure=plot_period_bar(quarterly_perf, "逐季損益")), width=6)
-                ], className="mt-3")
-            ]),
-        ], className="mt-3")
+                         generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
+            ])
+        ]),
+        dbc.Tab(label="週期趨勢", children=[
+            dbc.Row([
+                dbc.Col(dcc.Graph(figure=plot_period_bar(monthly_perf, "逐月損益")), width=6),
+                dbc.Col(dcc.Graph(figure=plot_period_bar(quarterly_perf, "逐季損益")), width=6)
+            ], className="mt-3")
+        ]),
+    ], className="mt-3")
 
-        # 回傳時間戳作為信號
-        return html.Div([summary, tabs]), str(time.time())
+    return html.Div([summary, tabs]), finish_signal
 
     except Exception as e:
-        # 捕捉所有未預期錯誤，確保信號發送
-        print(traceback.format_exc()) # 印出錯誤到後台 logs 供除錯
+        print(traceback.format_exc())
         return dbc.Alert(f"系統錯誤: {str(e)}", color="danger"), f"ERROR_{time.time()}"
 
 # 2. Client-side Logic (JavaScript)
-# 採用「雙重時間戳比對」：last_modified 觸發開始，signal 觸發結束。
+# 修正邏輯：不看 context，只看變數是否更新
 app.clientside_callback(
     """
     function(last_modified, signal, filename) {
-        // --- 初始化狀態 ---
-        if (window.lastUploadTs === undefined) window.lastUploadTs = null;
-        if (window.lastSignalTs === undefined) window.lastSignalTs = null;
+        console.log("JS Callback Triggered!");
+        console.log("Last Modified:", last_modified);
+        console.log("Signal:", signal);
+
+        // 初始化全域狀態
+        if (window.lastProcessedUpload === undefined) window.lastProcessedUpload = null;
+        if (window.lastProcessedSignal === undefined) window.lastProcessedSignal = null;
 
         var container = document.getElementById('progress-section');
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
         var contentWrapper = document.getElementById('content-wrapper');
 
-        // --- 判斷 1: 是否為新的上傳 (Start) ---
-        // 只要 last_modified 變了，就代表使用者選了檔案
-        if (last_modified && last_modified !== window.lastUploadTs) {
-            window.lastUploadTs = last_modified;
+        // --- 邏輯 A: 檢查是否有「新的完成信號」 (優先權最高) ---
+        // 如果 signal 變了，且不為空 -> 代表 Python 算完了
+        if (signal && signal !== window.lastProcessedSignal) {
+            console.log(">>> ACTION: FINISH (Signal changed)");
+            window.lastProcessedSignal = signal; // 標記為已處理
             
-            // UI 重置
+            // 立即停止所有計時器
+            if (window.uploadTimer) clearInterval(window.uploadTimer);
+            
+            // UI 強制顯示 100%
+            if (textDiv) textDiv.innerText = '解析完成！ 100%';
+            if (barDiv) barDiv.style.width = '100%';
+            
+            // 延遲顯示結果
+            setTimeout(function(){
+                console.log(">>> UI: Showing Result");
+                if (container) container.style.display = 'none';
+                if (contentWrapper) {
+                    contentWrapper.style.display = 'block';
+                    setTimeout(() => { contentWrapper.style.opacity = '1'; }, 50);
+                }
+            }, 500);
+            
+            return {'display': 'block'};
+        }
+
+        // --- 邏輯 B: 檢查是否有「新的上傳」 ---
+        // 如果 last_modified 變了，且不為空 -> 代表剛上傳
+        if (last_modified && last_modified !== window.lastProcessedUpload) {
+            console.log(">>> ACTION: START (Upload detected)");
+            window.lastProcessedUpload = last_modified; // 標記為已處理
+            
+            // 重置 UI：隱藏結果，顯示進度條
             if (contentWrapper) {
                 contentWrapper.style.opacity = '0';
                 contentWrapper.style.display = 'none';
@@ -351,10 +385,10 @@ app.clientside_callback(
             if (container) container.style.display = 'block';
             if (barDiv) barDiv.style.width = '0%';
             
-            // 啟動計時器 (跑到 90%)
+            // 啟動 0% -> 90% 計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             var percent = 0;
-            window.targetPercent = 90;
+            window.targetPercent = 90; 
             
             window.uploadTimer = setInterval(function() {
                 if (percent < window.targetPercent) {
@@ -367,35 +401,12 @@ app.clientside_callback(
             return {'display': 'block'};
         }
 
-        // --- 判斷 2: 是否收到新的完成信號 (Finish) ---
-        // 只要 signal 變了，代表 Python 算完了
-        if (signal && signal !== window.lastSignalTs) {
-            window.lastSignalTs = signal;
-            
-            // 立即停止等待計時器
-            if (window.uploadTimer) clearInterval(window.uploadTimer);
-            
-            // 直接顯示完成狀態
-            if (textDiv) textDiv.innerText = '解析完成！ 100%';
-            if (barDiv) barDiv.style.width = '100%';
-            
-            // 延遲顯示結果
-            setTimeout(function(){
-                if (container) container.style.display = 'none';
-                if (contentWrapper) {
-                    contentWrapper.style.display = 'block';
-                    setTimeout(() => { contentWrapper.style.opacity = '1'; }, 50);
-                }
-            }, 500);
-            
-            return {'display': 'block'};
-        }
-
+        console.log(">>> No action taken (inputs identical to last run)");
         return window.dash_clientside.no_update;
     }
     """,
     Output('progress-section', 'style'),
-    [Input('upload-data', 'last_modified'), # 改監聽 last_modified (最準確)
+    [Input('upload-data', 'last_modified'), 
      Input('signal-store', 'data')],
     [State('upload-data', 'filename')]
 )
