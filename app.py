@@ -9,6 +9,7 @@ from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 import mimetypes
+import traceback
 
 # 1. 修正 MIME Types
 mimetypes.add_type("application/javascript", ".js")
@@ -63,7 +64,7 @@ nebula_css_string = '''
         background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
         box-shadow: 0 0 10px var(--neon-blue);
         border-radius: 2px;
-        transition: width 0.3s ease-out; /* 讓動畫更順暢 */
+        transition: width 0.3s ease-out;
     }
     .loading-text {
         color: var(--neon-blue);
@@ -89,7 +90,6 @@ nebula_css_string = '''
     .nav-tabs .nav-link {
         color: #888 !important;
     }
-    /* 預設隱藏結果區 */
     #content-wrapper {
         display: none;
         opacity: 0;
@@ -122,7 +122,7 @@ def parse_contents(contents, filename):
             return None, "不支援的檔案格式"
         
         # 模擬運算
-        time.sleep(1.2)
+        time.sleep(1.0)
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -195,7 +195,7 @@ app.layout = dbc.Container([
                 className='upload-box',
                 multiple=False
             ),
-            # 進度條區域
+            # 進度條
             html.Div([
                 html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
@@ -218,7 +218,7 @@ app.layout = dbc.Container([
 
 # --- Callbacks ---
 
-# 1. Server-side Logic
+# 1. Server-side Logic (Python)
 @app.callback(
     [Output('output-content', 'children'),
      Output('signal-store', 'data')],
@@ -228,127 +228,134 @@ app.layout = dbc.Container([
 )
 def update_output(contents, filename):
     if contents is None:
-        return html.Div(), None
+        return html.Div(), dash.no_update
     
-    df, error = parse_contents(contents, filename)
-    
-    if error:
-        return dbc.Alert(f"錯誤: {error}", color="danger"), "ERROR"
+    try:
+        df, error = parse_contents(contents, filename)
+        
+        if error:
+            # 發生錯誤也要回傳信號，不然前端會一直卡在 Loading
+            return dbc.Alert(f"錯誤: {error}", color="danger"), f"ERROR_{time.time()}"
 
-    # 運算邏輯
-    total_profit = df['損益試算'].sum()
-    total_cost = df['買進金額'].sum()
-    total_roi = (df['賣出金額'].sum() / total_cost) - 1
+        # 運算邏輯
+        total_profit = df['損益試算'].sum()
+        total_cost = df['買進金額'].sum()
+        total_roi = (df['賣出金額'].sum() / total_cost) - 1
 
-    stock_grp = df.groupby('商品')[['買進金額', '賣出金額', '損益試算']].sum().reset_index()
-    stock_grp['報酬率'] = (stock_grp['賣出金額'] / stock_grp['買進金額']) - 1
-    top_5_stocks = stock_grp.sort_values(by='損益試算', ascending=False).head(5)
-    bottom_5_stocks = stock_grp.sort_values(by='損益試算', ascending=True).head(5)
+        stock_grp = df.groupby('商品')[['買進金額', '賣出金額', '損益試算']].sum().reset_index()
+        stock_grp['報酬率'] = (stock_grp['賣出金額'] / stock_grp['買進金額']) - 1
+        top_5_stocks = stock_grp.sort_values(by='損益試算', ascending=False).head(5)
+        bottom_5_stocks = stock_grp.sort_values(by='損益試算', ascending=True).head(5)
 
-    df['單筆報酬率'] = (df['賣出金額'] / df['買進金額']) - 1
-    top_5_tx = df.sort_values(by='損益試算', ascending=False).head(5)
-    bottom_5_tx = df.sort_values(by='損益試算', ascending=True).head(5)
+        df['單筆報酬率'] = (df['賣出金額'] / df['買進金額']) - 1
+        top_5_tx = df.sort_values(by='損益試算', ascending=False).head(5)
+        bottom_5_tx = df.sort_values(by='損益試算', ascending=True).head(5)
 
-    df_time = df.set_index('成交日期').sort_index()
-    monthly_perf = df_time.resample('M')[['損益試算']].sum()
-    monthly_perf.index = monthly_perf.index.strftime('%Y-%m')
-    quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
-    quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
+        df_time = df.set_index('成交日期').sort_index()
+        monthly_perf = df_time.resample('M')[['損益試算']].sum()
+        monthly_perf.index = monthly_perf.index.strftime('%Y-%m')
+        quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
+        quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
-    def fmt_df(d, m_cols, p_cols):
-        d_f = d.copy()
-        for c in m_cols: 
-            if c in d_f: d_f[c] = d_f[c].apply(format_currency)
-        for c in p_cols: 
-            if c in d_f: d_f[c] = d_f[c].apply(format_percent)
-        if '成交日期' in d_f: d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
-        return d_f
+        def fmt_df(d, m_cols, p_cols):
+            d_f = d.copy()
+            for c in m_cols: 
+                if c in d_f: d_f[c] = d_f[c].apply(format_currency)
+            for c in p_cols: 
+                if c in d_f: d_f[c] = d_f[c].apply(format_percent)
+            if '成交日期' in d_f: d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
+            return d_f
 
-    def create_card(title, value, is_money=True):
-        color_class = "text-white"
-        if is_money and isinstance(value, (int, float)):
-            if value > 0: color_class = "text-danger" 
-            elif value < 0: color_class = "text-info"
-            val_str = f"${value:,.0f}"
-        elif not is_money and isinstance(value, float):
-            val_str = f"{value:.2%}"
-            if value > 0: color_class = "text-danger"
-            else: color_class = "text-info"
-        else:
-            val_str = str(value)
-        return dbc.Card([
-            dbc.CardBody([
-                html.H6(title, className="card-subtitle mb-2 text-muted"),
-                html.H3(val_str, className=f"card-title {color_class}"),
-            ])
-        ], className="mb-4")
+        def create_card(title, value, is_money=True):
+            color_class = "text-white"
+            if is_money and isinstance(value, (int, float)):
+                if value > 0: color_class = "text-danger" 
+                elif value < 0: color_class = "text-info"
+                val_str = f"${value:,.0f}"
+            elif not is_money and isinstance(value, float):
+                val_str = f"{value:.2%}"
+                if value > 0: color_class = "text-danger"
+                else: color_class = "text-info"
+            else:
+                val_str = str(value)
+            return dbc.Card([
+                dbc.CardBody([
+                    html.H6(title, className="card-subtitle mb-2 text-muted"),
+                    html.H3(val_str, className=f"card-title {color_class}"),
+                ])
+            ], className="mb-4")
 
-    summary = dbc.Row([
-        dbc.Col(create_card("總獲利金額", total_profit), width=4),
-        dbc.Col(create_card("總投入成本", total_cost), width=4),
-        dbc.Col(create_card("總投資報酬率", total_roi, is_money=False), width=4),
-    ])
+        summary = dbc.Row([
+            dbc.Col(create_card("總獲利金額", total_profit), width=4),
+            dbc.Col(create_card("總投入成本", total_cost), width=4),
+            dbc.Col(create_card("總投資報酬率", total_roi, is_money=False), width=4),
+        ])
 
-    tabs = dbc.Tabs([
-        dbc.Tab(label="個股排行榜", children=[
-            dbc.Row([
-                dbc.Col([html.H5("🔥 獲利 Top 5", className="mt-3 text-center text-danger"), 
-                         generate_table(fmt_df(top_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6),
-                dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
-                         generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
-            ])
-        ]),
-        dbc.Tab(label="單筆排行榜", children=[
-            dbc.Row([
-                dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
-                         generate_table(fmt_df(top_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6),
-                dbc.Col([html.H5("📉 單筆虧損王", className="mt-3 text-center"), 
-                         generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
-            ])
-        ]),
-        dbc.Tab(label="週期趨勢", children=[
-            dbc.Row([
-                dbc.Col(dcc.Graph(figure=plot_period_bar(monthly_perf, "逐月損益")), width=6),
-                dbc.Col(dcc.Graph(figure=plot_period_bar(quarterly_perf, "逐季損益")), width=6)
-            ], className="mt-3")
-        ]),
-    ], className="mt-3")
+        tabs = dbc.Tabs([
+            dbc.Tab(label="個股排行榜", children=[
+                dbc.Row([
+                    dbc.Col([html.H5("🔥 獲利 Top 5", className="mt-3 text-center text-danger"), 
+                             generate_table(fmt_df(top_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6),
+                    dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
+                             generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
+                ])
+            ]),
+            dbc.Tab(label="單筆排行榜", children=[
+                dbc.Row([
+                    dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
+                             generate_table(fmt_df(top_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6),
+                    dbc.Col([html.H5("📉 單筆虧損王", className="mt-3 text-center"), 
+                             generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
+                ])
+            ]),
+            dbc.Tab(label="週期趨勢", children=[
+                dbc.Row([
+                    dbc.Col(dcc.Graph(figure=plot_period_bar(monthly_perf, "逐月損益")), width=6),
+                    dbc.Col(dcc.Graph(figure=plot_period_bar(quarterly_perf, "逐季損益")), width=6)
+                ], className="mt-3")
+            ]),
+        ], className="mt-3")
 
-    # 回傳當前時間作為唯一信號
-    return html.Div([summary, tabs]), str(time.time())
+        # 回傳時間戳作為信號
+        return html.Div([summary, tabs]), str(time.time())
 
-# 2. Client-side Logic (使用 Trigger 偵測，這是解決卡住問題的關鍵)
+    except Exception as e:
+        # 捕捉所有未預期錯誤，確保信號發送
+        print(traceback.format_exc()) # 印出錯誤到後台 logs 供除錯
+        return dbc.Alert(f"系統錯誤: {str(e)}", color="danger"), f"ERROR_{time.time()}"
+
+# 2. Client-side Logic (JavaScript)
+# 採用「雙重時間戳比對」：last_modified 觸發開始，signal 觸發結束。
 app.clientside_callback(
     """
-    function(contents, signal, filename) {
-        // 取得是誰觸發了這次回調 (Dash 官方 API)
-        var triggers = dash_clientside.callback_context.triggered.map(t => t.prop_id);
-        
-        var isUpload = triggers.some(t => t.includes('upload-data.contents'));
-        var isSignal = triggers.some(t => t.includes('signal-store.data'));
+    function(last_modified, signal, filename) {
+        // --- 初始化狀態 ---
+        if (window.lastUploadTs === undefined) window.lastUploadTs = null;
+        if (window.lastSignalTs === undefined) window.lastSignalTs = null;
 
         var container = document.getElementById('progress-section');
         var textDiv = document.getElementById('loading-text-display');
         var barDiv = document.getElementById('progress-bar-inner');
         var contentWrapper = document.getElementById('content-wrapper');
 
-        // --- 狀況 1: 上傳觸發 (Start) ---
-        if (isUpload) {
-            // 隱藏舊結果
+        // --- 判斷 1: 是否為新的上傳 (Start) ---
+        // 只要 last_modified 變了，就代表使用者選了檔案
+        if (last_modified && last_modified !== window.lastUploadTs) {
+            window.lastUploadTs = last_modified;
+            
+            // UI 重置
             if (contentWrapper) {
                 contentWrapper.style.opacity = '0';
                 contentWrapper.style.display = 'none';
             }
             if (container) container.style.display = 'block';
+            if (barDiv) barDiv.style.width = '0%';
             
-            // 清除舊計時器
+            // 啟動計時器 (跑到 90%)
             if (window.uploadTimer) clearInterval(window.uploadTimer);
-            
             var percent = 0;
-            // 設定目標：只能跑到 90%
-            window.targetPercent = 90; 
+            window.targetPercent = 90;
             
-            // 啟動計時器
             window.uploadTimer = setInterval(function() {
                 if (percent < window.targetPercent) {
                     percent += 1;
@@ -360,27 +367,26 @@ app.clientside_callback(
             return {'display': 'block'};
         }
 
-        // --- 狀況 2: 信號觸發 (Finish) ---
-        if (isSignal) {
-            // 立即停止舊計時器
+        // --- 判斷 2: 是否收到新的完成信號 (Finish) ---
+        // 只要 signal 變了，代表 Python 算完了
+        if (signal && signal !== window.lastSignalTs) {
+            window.lastSignalTs = signal;
+            
+            // 立即停止等待計時器
             if (window.uploadTimer) clearInterval(window.uploadTimer);
             
-            // 直接顯示 100% (不跑動畫了，避免延遲)
-            if (textDiv) textDiv.innerText = '解析完成！';
+            // 直接顯示完成狀態
+            if (textDiv) textDiv.innerText = '解析完成！ 100%';
             if (barDiv) barDiv.style.width = '100%';
             
-            // 設定延遲顯示結果
+            // 延遲顯示結果
             setTimeout(function(){
-                // 隱藏進度條
                 if (container) container.style.display = 'none';
-                
-                // 顯示結果 (淡入效果)
                 if (contentWrapper) {
                     contentWrapper.style.display = 'block';
-                    // 為了觸發 transition，需要一點點延遲
                     setTimeout(() => { contentWrapper.style.opacity = '1'; }, 50);
                 }
-            }, 600); // 讓使用者看到 100% 停留 0.6 秒
+            }, 500);
             
             return {'display': 'block'};
         }
@@ -389,7 +395,7 @@ app.clientside_callback(
     }
     """,
     Output('progress-section', 'style'),
-    [Input('upload-data', 'contents'),
+    [Input('upload-data', 'last_modified'), # 改監聽 last_modified (最準確)
      Input('signal-store', 'data')],
     [State('upload-data', 'filename')]
 )
