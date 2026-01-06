@@ -111,30 +111,134 @@ app = dash.Dash(
 app.title = "對帳單解析"
 server = app.server
 
-# --- 輔助函式 ---
+# --- 資料處理輔助函式 ---
+
+def clean_currency(x):
+    """清理金額/數量欄位：移除逗號、空白，並轉為浮點數"""
+    if pd.isna(x):
+        return 0.0
+    s = str(x).replace(',', '').replace(' ', '').strip()
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+def clean_date(x):
+    """統一日期格式：轉為 YYYYMMDD 字串"""
+    if pd.isna(x):
+        return ""
+    s = str(x).strip()
+    # 嘗試標準日期解析
+    try:
+        dt = pd.to_datetime(s, errors='coerce')
+        if pd.notna(dt):
+            return dt.strftime('%Y%m%d')
+    except:
+        pass
+    # 若無法解析，則單純移除分隔符號
+    return s.replace('/', '').replace('-', '')
+
+def normalize_dataframe(df):
+    """
+    核心邏輯：將不同券商的損益表統一為「已實現.xlsx」的標準格式。
+    """
+    # 移除完全空白的列
+    df = df.dropna(how='all')
+    if df.empty:
+        return df
+
+    # 格式自動偵測
+    # 檢查第 2 欄 (Index 1) 的內容
+    # 已實現.xlsx: B欄是「類別」(文字，如融資、現股)
+    # 證券_歷史已實損益.xlsx: B欄是「成交日期」(日期格式)
+    
+    first_row_b_val = str(df.iloc[0, 1]).strip()
+    
+    is_history_format = False
+    # 簡易日期特徵判斷 (包含斜線、破折號或純8碼數字)
+    if '/' in first_row_b_val or '-' in first_row_b_val or (first_row_b_val.isdigit() and len(first_row_b_val) == 8):
+        is_history_format = True
+    
+    # 建立標準資料字典
+    new_data = {}
+    
+    if is_history_format:
+        # === 處理格式：證券_歷史已實損益.xlsx ===
+        # 對應邏輯：
+        # A(0):商品, B(1):日期, C(2):類別(需截斷), D(3):數量, E(4):價格(推斷), F(5):賣出, G(6):買進, H(7):損益, I(8):報酬
+        
+        new_data['商品'] = df.iloc[:, 0].astype(str).str.strip()
+        new_data['類別'] = df.iloc[:, 2].astype(str).str.strip().str[:2] # 截取前2字
+        new_data['成交日期'] = df.iloc[:, 1]
+        new_data['成交數量'] = df.iloc[:, 3]
+        new_data['成交價格'] = df.iloc[:, 4] 
+        new_data['買進金額'] = df.iloc[:, 6] # 注意：此格式 G 欄是買進
+        new_data['賣出金額'] = df.iloc[:, 5] # 注意：此格式 F 欄是賣出
+        new_data['損益試算'] = df.iloc[:, 7]
+        new_data['報酬率'] = df.iloc[:, 8]
+        
+    else:
+        # === 處理格式：已實現.xlsx (基準) ===
+        # 對應邏輯：
+        # A(0):商品, B(1):類別, C(2):日期, D(3):數量, E(4):價格, F(5):買進, G(6):賣出
+        
+        # 使用 iloc 確保位置正確，忽略 header 名稱微小差異
+        new_data['商品'] = df.iloc[:, 0].astype(str).str.strip()
+        new_data['類別'] = df.iloc[:, 1].astype(str).str.strip()
+        new_data['成交日期'] = df.iloc[:, 2]
+        new_data['成交數量'] = df.iloc[:, 3]
+        new_data['成交價格'] = df.iloc[:, 4]
+        new_data['買進金額'] = df.iloc[:, 5]
+        new_data['賣出金額'] = df.iloc[:, 6]
+        new_data['損益試算'] = df.iloc[:, 7]
+        new_data['報酬率'] = df.iloc[:, 8]
+        
+    df_out = pd.DataFrame(new_data)
+    
+    # 統一清洗數據
+    df_out['成交日期'] = df_out['成交日期'].apply(clean_date)
+    
+    numeric_cols = ['成交數量', '成交價格', '買進金額', '賣出金額', '損益試算', '報酬率']
+    for col in numeric_cols:
+        df_out[col] = df_out[col].apply(clean_currency)
+        
+    return df_out
+
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     try:
-        if 'csv' in filename:
-            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-        elif 'xls' in filename:
+        df = None
+        if 'csv' in filename.lower():
+            try:
+                # 優先嘗試 UTF-8
+                df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+            except:
+                # 若失敗則嘗試 Big5 (常見於舊版 Excel 匯出的 CSV)
+                df = pd.read_csv(io.StringIO(decoded.decode('big5')))
+        elif 'xls' in filename.lower():
             df = pd.read_excel(io.BytesIO(decoded))
         else:
             return None, "不支援的檔案格式"
         
         # 模擬運算延遲
         time.sleep(1.0)
-            
-        df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
-        numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        if '買進金額' in df.columns and '賣出金額' in df.columns:
-            df['單筆報酬率'] = (df['賣出金額'] / df['買進金額']) - 1
-        return df, None
+        # --- 呼叫標準化函式 ---
+        if df is not None:
+            df = normalize_dataframe(df)
+            
+            # --- 額外計算 ---
+            if '買進金額' in df.columns and '賣出金額' in df.columns:
+                # 避免分母為0
+                df['單筆報酬率'] = df.apply(lambda row: (row['賣出金額'] / row['買進金額'] - 1) if row['買進金額'] != 0 else 0, axis=1)
+                
+            # 確保日期欄位為 datetime 物件以便後續 resample 使用
+            df['成交日期'] = pd.to_datetime(df['成交日期'], format='%Y%m%d', errors='coerce')
+            
+            return df, None
+        return None, "讀取失敗"
+
     except Exception as e:
         return None, str(e)
 
@@ -187,7 +291,7 @@ app.layout = dbc.Container([
                 id='upload-data',
                 children=html.Div([
                     '拖拉檔案至此 或 ', 
-                    html.Span('點擊上傳 CSV', style={'textDecoration': 'underline', 'fontWeight': 'bold'})
+                    html.Span('點擊上傳', style={'textDecoration': 'underline', 'fontWeight': 'bold'})
                 ]),
                 style={
                     'width': '100%', 'height': '80px', 'lineHeight': '80px',
@@ -235,6 +339,7 @@ def update_output(contents, filename):
         return html.Div(), dash.no_update
     
     try:
+        # 使用新的解析邏輯
         df, error = parse_contents(contents, filename)
         
         # 產生完成信號 (時間戳)
@@ -243,24 +348,25 @@ def update_output(contents, filename):
         if error:
             return dbc.Alert(f"錯誤: {error}", color="danger"), finish_signal
 
-        # --- 運算邏輯 ---
+        # --- 運算邏輯 (保持原樣，但因 df 已標準化，可直接使用) ---
         total_profit = df['損益試算'].sum()
         total_cost = df['買進金額'].sum()
-        total_roi = (df['賣出金額'].sum() / total_cost) - 1
+        # 避免分母為 0
+        total_roi = (df['賣出金額'].sum() / total_cost - 1) if total_cost != 0 else 0
 
         stock_grp = df.groupby('商品')[['買進金額', '賣出金額', '損益試算']].sum().reset_index()
-        stock_grp['報酬率'] = (stock_grp['賣出金額'] / stock_grp['買進金額']) - 1
+        stock_grp['報酬率'] = stock_grp.apply(lambda row: (row['賣出金額'] / row['買進金額'] - 1) if row['買進金額'] != 0 else 0, axis=1)
+        
         top_5_stocks = stock_grp.sort_values(by='損益試算', ascending=False).head(5)
         bottom_5_stocks = stock_grp.sort_values(by='損益試算', ascending=True).head(5)
 
-        df['單筆報酬率'] = (df['賣出金額'] / df['買進金額']) - 1
         top_5_tx = df.sort_values(by='損益試算', ascending=False).head(5)
         bottom_5_tx = df.sort_values(by='損益試算', ascending=True).head(5)
 
         df_time = df.set_index('成交日期').sort_index()
-        monthly_perf = df_time.resample('M')[['損益試算']].sum()
+        monthly_perf = df_time.resample('ME')[['損益試算']].sum() # pandas新版建議使用 'ME' 代替 'M'
         monthly_perf.index = monthly_perf.index.strftime('%Y-%m')
-        quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
+        quarterly_perf = df_time.resample('QE')[['損益試算']].sum() # pandas新版建議使用 'QE' 代替 'Q'
         quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
         def fmt_df(d, m_cols, p_cols):
@@ -269,7 +375,10 @@ def update_output(contents, filename):
                 if c in d_f: d_f[c] = d_f[c].apply(format_currency)
             for c in p_cols: 
                 if c in d_f: d_f[c] = d_f[c].apply(format_percent)
-            if '成交日期' in d_f: d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
+            if '成交日期' in d_f: 
+                # 檢查是否為 datetime 物件，如果是則格式化，否則保留字串
+                if pd.api.types.is_datetime64_any_dtype(d_f['成交日期']):
+                    d_f['成交日期'] = d_f['成交日期'].dt.strftime('%Y-%m-%d')
             return d_f
 
         def create_card(title, value, is_money=True):
@@ -311,7 +420,7 @@ def update_output(contents, filename):
                     dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
                              generate_table(fmt_df(top_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6),
                     dbc.Col([html.H5("📉 單筆虧損王", className="mt-3 text-center"), 
-                         generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
+                             generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
             ])
         ]),
         dbc.Tab(label="週期趨勢", children=[
