@@ -13,19 +13,13 @@ import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
-# 2. 初始化 Dash 
-# ★★★ 關鍵修正：必須加入 prevent_initial_callbacks="initial_duplicate" 才能使用多重 Output ★★★
-app = dash.Dash(
-    __name__, 
-    external_stylesheets=[dbc.themes.DARKLY],
-    prevent_initial_callbacks="initial_duplicate" 
-)
+# 2. 初始化 Dash (移除導致報錯的 prevent_initial_callbacks 參數)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
 app.title = "對帳單解析"
 
-# 3. 暴露 server 變數給 Gunicorn (部署必備)
 server = app.server
 
-# 4. 星雲設計系統 CSS
+# 3. 星雲設計系統 CSS
 nebula_styles = html.Style('''
     :root {
         --bg-color: #050510;
@@ -81,7 +75,6 @@ nebula_styles = html.Style('''
         font-family: monospace;
         margin-bottom: 5px;
     }
-    /* 表格樣式優化 */
     .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
         background-color: #1f1f2e !important;
         color: var(--neon-blue) !important;
@@ -93,7 +86,6 @@ nebula_styles = html.Style('''
         color: #fff !important;
         border: none !important;
     }
-    /* 分頁標籤樣式 */
     .nav-tabs .nav-link.active {
         background-color: var(--card-bg) !important;
         border-color: var(--neon-blue) !important;
@@ -104,7 +96,7 @@ nebula_styles = html.Style('''
     }
 ''')
 
-# --- 邏輯運算函式 ---
+# --- 輔助函式 ---
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
@@ -116,8 +108,7 @@ def parse_contents(contents, filename):
         else:
             return None, "不支援的檔案格式"
         
-        # 模擬運算延遲 (為了讓動畫跑完)
-        time.sleep(1.5)
+        time.sleep(1.5) # 模擬運算延遲
             
         df['成交日期'] = pd.to_datetime(df['成交日期'].astype(str), format='%Y%m%d', errors='coerce')
         numeric_cols = ['買進金額', '賣出金額', '損益試算', '成交數量', '成交價格']
@@ -142,7 +133,6 @@ def generate_table(dataframe, display_cols=None):
         df_display = dataframe[display_cols].copy()
     else:
         df_display = dataframe.copy()
-    
     return dash_table.DataTable(
         data=df_display.to_dict('records'),
         columns=[{'name': i, 'id': i} for i in df_display.columns],
@@ -151,7 +141,6 @@ def generate_table(dataframe, display_cols=None):
     )
 
 def plot_period_bar(df_resampled, title):
-    # 霓虹配色：紅 vs 青
     colors = ['#ff2a6d' if x > 0 else '#00f2ff' for x in df_resampled['損益試算']]
     fig = go.Figure(data=[
         go.Bar(
@@ -176,9 +165,7 @@ def plot_period_bar(df_resampled, title):
 app.layout = dbc.Container([
     nebula_styles,
     
-    dbc.Row([
-        dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)
-    ]),
+    dbc.Row([dbc.Col(html.H2("對帳單解析", className="text-center mt-5 mb-4 nebula-title"), width=12)]),
 
     # 上傳區
     dbc.Row([
@@ -197,12 +184,11 @@ app.layout = dbc.Container([
                 className='upload-box',
                 multiple=False
             ),
-            
-            # 動態進度條
+            # 進度條
             html.Div([
                 html.Div(id='loading-text-display', className='loading-text', children='準備中...'),
                 html.Div(html.Div(id='progress-bar-inner', className='progress-bar-nebula'), 
-                         style={'width': '100%', 'backgroundColor': '#1a1a2e', 'borderRadius': '2px'})
+                         style={'width': '0%', 'backgroundColor': '#1a1a2e', 'borderRadius': '2px'})
             ], id='progress-section', className='progress-container'),
             
         ], width={"size": 8, "offset": 2})
@@ -210,65 +196,35 @@ app.layout = dbc.Container([
 
     html.Hr(style={'borderColor': 'rgba(255,255,255,0.1)'}),
 
-    # 結果輸出區
+    # 信號儲存器 (用於控制動畫結束)
+    dcc.Store(id='signal-store'),
+    
+    # 結果輸出
     html.Div(id='output-content')
 
 ], fluid=True, style={'minHeight': '100vh'})
 
-# --- Callbacks ---
 
-# 1. 前端動畫 JS (Client-side)
-app.clientside_callback(
-    """
-    function(contents, filename) {
-        if (!contents) {
-            return {'display': 'none'};
-        }
-        
-        var container = document.getElementById('progress-section');
-        if (container) container.style.display = 'block';
+# --- Callbacks (改用單一控制源，避免衝突) ---
 
-        var percent = 0;
-        var textDiv = document.getElementById('loading-text-display');
-        var barDiv = document.getElementById('progress-bar-inner');
-        
-        if (window.uploadTimer) clearInterval(window.uploadTimer);
-        
-        // 模擬 0% -> 99% 的跑條
-        window.uploadTimer = setInterval(function() {
-            if (percent < 99) {
-                percent += 1;
-                if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + percent + '%';
-                if (barDiv) barDiv.style.width = percent + '%';
-            }
-        }, 20); // 速度設定
-        
-        return {'display': 'block'};
-    }
-    """,
-    Output('progress-section', 'style'),
-    [Input('upload-data', 'contents')],
-    [State('upload-data', 'filename')]
-)
-
-# 2. 後端 Python 處理
+# 1. Server-side: 處理資料，並發送「完成信號」
 @app.callback(
     [Output('output-content', 'children'),
-     Output('progress-section', 'style', allow_duplicate=True)], 
+     Output('signal-store', 'data')],
     [Input('upload-data', 'contents')],
     [State('upload-data', 'filename')],
     prevent_initial_call=True
 )
 def update_output(contents, filename):
     if contents is None:
-        return html.Div(), {'display': 'none'}
+        return html.Div(), None
     
     df, error = parse_contents(contents, filename)
     
     if error:
-        return dbc.Alert(f"錯誤: {error}", color="danger"), {'display': 'none'}
+        return dbc.Alert(f"錯誤: {error}", color="danger"), "ERROR"
 
-    # 運算
+    # --- 運算邏輯 ---
     total_profit = df['損益試算'].sum()
     total_cost = df['買進金額'].sum()
     total_roi = (df['賣出金額'].sum() / total_cost) - 1
@@ -288,6 +244,7 @@ def update_output(contents, filename):
     quarterly_perf = df_time.resample('Q')[['損益試算']].sum()
     quarterly_perf.index = quarterly_perf.index.strftime('%Y-Q%q')
 
+    # 格式化
     def fmt_df(d, m_cols, p_cols):
         d_f = d.copy()
         for c in m_cols: 
@@ -301,7 +258,7 @@ def update_output(contents, filename):
         color_class = "text-white"
         if is_money and isinstance(value, (int, float)):
             if value > 0: color_class = "text-danger" 
-            elif value < 0: color_class = "text-info" # 青色代表賠
+            elif value < 0: color_class = "text-info"
             val_str = f"${value:,.0f}"
         elif not is_money and isinstance(value, float):
             val_str = f"{value:.2%}"
@@ -309,7 +266,6 @@ def update_output(contents, filename):
             else: color_class = "text-info"
         else:
             val_str = str(value)
-            
         return dbc.Card([
             dbc.CardBody([
                 html.H6(title, className="card-subtitle mb-2 text-muted"),
@@ -318,7 +274,7 @@ def update_output(contents, filename):
         ], className="mb-4")
 
     # 構建 UI
-    summary_section = dbc.Row([
+    summary = dbc.Row([
         dbc.Col(create_card("總獲利金額", total_profit), width=4),
         dbc.Col(create_card("總投入成本", total_cost), width=4),
         dbc.Col(create_card("總投資報酬率", total_roi, is_money=False), width=4),
@@ -332,8 +288,7 @@ def update_output(contents, filename):
                 dbc.Col([html.H5("❄️ 虧損 Top 5", className="mt-3 text-center text-info"), 
                          generate_table(fmt_df(bottom_5_stocks, ['損益試算'], ['報酬率']), ['商品', '損益試算', '報酬率'])], width=6)
             ])
-        ]),
-        
+        ], tab_style={'color': '#00f2ff'}),
         dbc.Tab(label="單筆排行榜", children=[
             dbc.Row([
                 dbc.Col([html.H5("🚀 單筆獲利王", className="mt-3 text-center"), 
@@ -342,7 +297,6 @@ def update_output(contents, filename):
                          generate_table(fmt_df(bottom_5_tx, ['損益試算'], ['單筆報酬率']), ['成交日期', '商品', '損益試算', '單筆報酬率'])], width=6)
             ])
         ]),
-        
         dbc.Tab(label="週期趨勢", children=[
             dbc.Row([
                 dbc.Col(dcc.Graph(figure=plot_period_bar(monthly_perf, "逐月損益")), width=6),
@@ -351,7 +305,62 @@ def update_output(contents, filename):
         ]),
     ], className="mt-3")
 
-    return html.Div([summary_section, tabs]), {'display': 'none'}
+    return html.Div([summary, tabs]), str(time.time()) # 回傳時間戳記當作「完成信號」
+
+# 2. Client-side: 統一控制進度條 (監聽 上傳動作 與 完成信號)
+app.clientside_callback(
+    """
+    function(contents, signal, filename) {
+        // 取得觸發來源 (是上傳了檔案? 還是運算完成了?)
+        var triggered = dash_clientside.callback_context.triggered.map(t => t.prop_id);
+        var is_upload = triggered.some(t => t.includes('upload-data.contents'));
+        var is_done = triggered.some(t => t.includes('signal-store.data'));
+
+        var container = document.getElementById('progress-section');
+        var textDiv = document.getElementById('loading-text-display');
+        var barDiv = document.getElementById('progress-bar-inner');
+
+        // 情況 A: 剛上傳檔案 -> 顯示進度條，開始跑動畫
+        if (is_upload && contents) {
+            if (container) container.style.display = 'block';
+            
+            // 清除舊 timer
+            if (window.uploadTimer) clearInterval(window.uploadTimer);
+            
+            var percent = 0;
+            window.uploadTimer = setInterval(function() {
+                if (percent < 99) {
+                    percent += 1;
+                    if (textDiv) textDiv.innerText = '正在載入 "' + filename + '" ... ' + percent + '%';
+                    if (barDiv) barDiv.style.width = percent + '%';
+                }
+            }, 30); // 動畫速度
+            
+            return {'display': 'block'};
+        }
+
+        // 情況 B: 收到完成信號 -> 隱藏進度條，停止動畫
+        if (is_done) {
+            if (window.uploadTimer) clearInterval(window.uploadTimer);
+            if (barDiv) barDiv.style.width = '100%';
+            if (textDiv) textDiv.innerText = '解析完成！';
+            
+            // 延遲一下再消失，讓使用者看到 100%
+            setTimeout(function(){
+                if (container) container.style.display = 'none';
+            }, 500);
+            
+            return {'display': 'none'}; // 這裡其實會被 setTimeout 蓋過，主要為了邏輯完整
+        }
+
+        return {'display': 'none'};
+    }
+    """,
+    Output('progress-section', 'style'),
+    [Input('upload-data', 'contents'),
+     Input('signal-store', 'data')], # 監聽這兩個
+    [State('upload-data', 'filename')]
+)
 
 if __name__ == '__main__':
     app.run_server(debug=False)
